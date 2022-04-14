@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	networkingv1 "github.com/alibaba/hybridnet/pkg/apis/networking/v1"
 	"github.com/alibaba/hybridnet/pkg/feature"
 )
 
@@ -85,11 +86,12 @@ func ParseIPFamilyFromEnv() IPFamilyMode {
 	}
 }
 
-type NetworkType string
+type NetworkType networkingv1.NetworkType
 
 const (
-	Underlay = NetworkType("Underlay")
-	Overlay  = NetworkType("Overlay")
+	Underlay  = NetworkType(networkingv1.NetworkTypeUnderlay)
+	Overlay   = NetworkType(networkingv1.NetworkTypeOverlay)
+	GlobalBGP = NetworkType(networkingv1.NetworkTypeGlobalBGP)
 )
 
 func ParseNetworkTypeFromString(in string) NetworkType {
@@ -98,6 +100,8 @@ func ParseNetworkTypeFromString(in string) NetworkType {
 		return Underlay
 	case strings.ToLower(string(Overlay)):
 		return Overlay
+	case strings.ToLower(string(GlobalBGP)):
+		return GlobalBGP
 	case "":
 		return ParseNetworkTypeFromEnvOnce()
 	default:
@@ -124,6 +128,8 @@ func ParseNetworkTypeFromEnv() NetworkType {
 		return Underlay
 	case strings.ToLower(string(Overlay)):
 		return Overlay
+	case strings.ToLower(string(GlobalBGP)):
+		return GlobalBGP
 	default:
 		return NetworkType(networkTypeEnv)
 	}
