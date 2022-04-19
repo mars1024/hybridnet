@@ -57,8 +57,9 @@ const (
 )
 
 const (
-	IndexerFieldNode = "node"
-	OverlayNodeName  = "c3e6699d28e7"
+	IndexerFieldNode  = "node"
+	OverlayNodeName   = "c3e6699d28e7"
+	GlobalBGPNodeName = "d7afdca2c149"
 )
 
 // PodReconciler reconciles a Pod object
@@ -182,62 +183,64 @@ func (r *PodReconciler) selectNetwork(pod *corev1.Pod) (string, error) {
 	var networkType = types.ParseNetworkTypeFromString(globalutils.PickFirstNonEmptyString(pod.Annotations[constants.AnnotationNetworkType], pod.Labels[constants.LabelNetworkType]))
 	switch networkType {
 	case types.Underlay:
-		// try to get underlay network by node indexer
-		var networkList *networkingv1.NetworkList
-		var err error
-		if networkList, err = utils.ListNetworks(r, client.MatchingFields{IndexerFieldNode: pod.Spec.NodeName}); err != nil {
-			return "", fmt.Errorf("unable to list underlay network by indexer node: %v", err)
-		}
-		if len(networkList.Items) >= 1 {
-			return networkList.Items[0].GetName(), nil
-		}
-
-		// fall back to find underlay network by label selector
 		var underlayNetworkName string
-		if underlayNetworkName, err = utils.FindUnderlayNetworkForNodeName(r, pod.Spec.NodeName); err != nil {
-			return "", fmt.Errorf("unable to find underlay network for node %s", pod.Spec.NodeName)
-		}
-		if len(underlayNetworkName) == 0 {
-			return "", fmt.Errorf("no underlay network match node %s", pod.Spec.NodeName)
-		}
-		if !r.matchNetworkTypeInManager(underlayNetworkName, types.Underlay) {
-			return "", fmt.Errorf("network %s does not match type %q in manager", underlayNetworkName, types.Underlay)
-		}
-		return underlayNetworkName, nil
-	case types.Overlay:
-		// try to get overlay network by special node name
-		var networkList *networkingv1.NetworkList
 		var err error
-		if networkList, err = utils.ListNetworks(r, client.MatchingFields{IndexerFieldNode: OverlayNodeName}); err != nil {
-			return "", fmt.Errorf("unable to list overlay network by indexer node: %v", err)
-		}
-		if len(networkList.Items) >= 1 {
-			return networkList.Items[0].GetName(), nil
+
+		// try to get underlay network by node indexer
+		if underlayNetworkName, err = r.getNetworkByNodeNameIndexer(pod.Spec.NodeName); err != nil {
+			return "", fmt.Errorf("unable to get underlay network by node name indexer: %v", err)
 		}
 
-		// fall back to find overlay network in client cache
+		if len(underlayNetworkName) != 0 {
+			return underlayNetworkName, nil
+		}
+
+		return "", fmt.Errorf("unable to find underlay network for node %s", pod.Spec.NodeName)
+	case types.Overlay:
 		var overlayNetworkName string
-		if overlayNetworkName, err = utils.FindOverlayNetwork(r); err != nil {
-			return "", fmt.Errorf("unable to find overlay network")
+		var err error
+
+		// try to get overlay network by special node name
+		if overlayNetworkName, err = r.getNetworkByNodeNameIndexer(OverlayNodeName); err != nil {
+			return "", fmt.Errorf("unable to get overlay network by node name indexer: %v", err)
 		}
-		if len(overlayNetworkName) == 0 {
-			return "", fmt.Errorf("no overlay network found")
+
+		if len(overlayNetworkName) != 0 {
+			return overlayNetworkName, nil
 		}
-		if !r.matchNetworkTypeInManager(overlayNetworkName, types.Overlay) {
-			return "", fmt.Errorf("network %s does not match type %q in manager", overlayNetworkName, types.Overlay)
+
+		return "", fmt.Errorf("unable to find overlay network")
+	case types.GlobalBGP:
+		var globalBGPNetworkName string
+		var err error
+
+		// try to get global bgp network by special node name
+		if globalBGPNetworkName, err = r.getNetworkByNodeNameIndexer(GlobalBGPNodeName); err != nil {
+			return "", fmt.Errorf("unable to get overlay network by node name indexer: %v", err)
 		}
-		return overlayNetworkName, nil
+
+		if len(globalBGPNetworkName) != 0 {
+			return globalBGPNetworkName, nil
+		}
+
+		return "", fmt.Errorf("unable to find global bgp network")
 	default:
 		return "", fmt.Errorf("unknown network type %s from pod", networkType)
 	}
 }
 
-// matchNetworkTypeInManager will check the picked network from APIServer in manager on
-// existence and type
-// TODO: return error if non existing
-func (r *PodReconciler) matchNetworkTypeInManager(networkName string, networkType types.NetworkType) bool {
-	return (feature.DualStackEnabled() && r.IPAMManager.DualStack().MatchNetworkType(networkName, networkType)) ||
-		(!feature.DualStackEnabled() && r.IPAMManager.MatchNetworkType(networkName, networkType))
+func (r *PodReconciler) getNetworkByNodeNameIndexer(nodeName string) (string, error) {
+	var networkList *networkingv1.NetworkList
+	var err error
+	if networkList, err = utils.ListNetworks(r, client.MatchingFields{IndexerFieldNode: nodeName}); err != nil {
+		return "", fmt.Errorf("unable to list network by indexer node name %v: %v", nodeName, err)
+	}
+
+	// only use the first one
+	if len(networkList.Items) >= 1 {
+		return networkList.Items[0].GetName(), nil
+	}
+	return "", nil
 }
 
 func (r *PodReconciler) statefulAllocate(ctx context.Context, pod *corev1.Pod, networkName string) (err error) {

@@ -126,12 +126,12 @@ type NetworkOfNodeChangePredicate struct {
 }
 
 func (n NetworkOfNodeChangePredicate) Update(e event.UpdateEvent) bool {
-	oldNetwork, err := FindUnderlayNetworkForNode(n.Client, e.ObjectOld.GetLabels())
+	oldNetwork, _, err := FindUnderlayNetworkForNode(n.Client, e.ObjectOld.GetLabels())
 	if err != nil {
 		// TODO: log here
 		return true
 	}
-	newNetwork, err := FindUnderlayNetworkForNode(n.Client, e.ObjectNew.GetLabels())
+	newNetwork, _, err := FindUnderlayNetworkForNode(n.Client, e.ObjectNew.GetLabels())
 	if err != nil {
 		// TODO: log here
 		return true

@@ -69,8 +69,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	var underlayAttached, overlayAttached bool
-	if underlayAttached, overlayAttached, err = utils.DetectNetworkAttachmentOfNode(r, node); err != nil {
+	var underlayAttached, overlayAttached, bgpAttached bool
+	if underlayAttached, overlayAttached, bgpAttached, err = utils.DetectNetworkAttachmentOfNode(r, node); err != nil {
 		log.Error(err, "unable to detect network attachment")
 		return ctrl.Result{}, err
 	}
@@ -86,6 +86,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	node.Labels[constants.LabelUnderlayNetworkAttachment] = attachedToString(underlayAttached)
 	node.Labels[constants.LabelOverlayNetworkAttachment] = attachedToString(overlayAttached)
+	node.Labels[constants.LabelBGPNetworkAttachment] = attachedToString(bgpAttached)
 
 	if err = r.Patch(ctx, node, nodePatch); err != nil {
 		log.Error(err, "unable to patch Node")

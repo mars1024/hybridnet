@@ -127,31 +127,32 @@ func GetRemoteCluster(client client.Reader, name string) (*multiclusterv1.Remote
 	return remoteCluster, nil
 }
 
-func FindUnderlayNetworkForNodeName(client client.Reader, nodeName string) (underlayNetworkName string, err error) {
+func FindUnderlayNetworkForNodeName(client client.Reader, nodeName string) (underlayNetworkName string,
+	networkMode networkingv1.NetworkMode, err error) {
 	var node = &corev1.Node{}
 	if err = client.Get(context.TODO(), types.NamespacedName{Name: nodeName}, node); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	return FindUnderlayNetworkForNode(client, node.GetLabels())
 }
 
-func FindUnderlayNetworkForNode(client client.Reader, nodeLabels map[string]string) (underlayNetworkName string, err error) {
+func FindUnderlayNetworkForNode(client client.Reader, nodeLabels map[string]string) (underlayNetworkName string,
+	networkMode networkingv1.NetworkMode, err error) {
 	networkList, err := ListNetworks(client)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	for i := range networkList.Items {
 		var network = networkList.Items[i]
-		// TODO: explicit network type
-		if network.Spec.Type != networkingv1.NetworkTypeOverlay && len(network.Spec.NodeSelector) > 0 {
+		if networkingv1.GetNetworkType(&network) == networkingv1.NetworkTypeUnderlay && len(network.Spec.NodeSelector) > 0 {
 			if labels.SelectorFromSet(network.Spec.NodeSelector).Matches(labels.Set(nodeLabels)) {
-				return network.Name, nil
+				return network.Name, networkingv1.GetNetworkMode(&network), nil
 			}
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 func FindOverlayNetwork(client client.Reader) (overlayNetworkName string, err error) {
@@ -162,8 +163,7 @@ func FindOverlayNetwork(client client.Reader) (overlayNetworkName string, err er
 
 	for i := range networkList.Items {
 		var network = networkList.Items[i]
-		// TODO: explicit network type
-		if network.Spec.Type == networkingv1.NetworkTypeOverlay {
+		if networkingv1.GetNetworkType(&network) == networkingv1.NetworkTypeOverlay {
 			return network.Name, nil
 		}
 	}
@@ -177,7 +177,7 @@ func FindOverlayNetworkNetID(client client.Reader) (*int32, error) {
 	}
 	for i := range networkList.Items {
 		var network = &networkList.Items[i]
-		if network.Spec.Type == networkingv1.NetworkTypeOverlay {
+		if networkingv1.GetNetworkType(network) == networkingv1.NetworkTypeOverlay {
 			if network.Spec.NetID == nil {
 				return nil, nil
 			}
@@ -188,9 +188,11 @@ func FindOverlayNetworkNetID(client client.Reader) (*int32, error) {
 	return nil, fmt.Errorf("no overlay network found")
 }
 
-func DetectNetworkAttachmentOfNode(client client.Reader, node *corev1.Node) (underlayAttached, overlayAttached bool, err error) {
+func DetectNetworkAttachmentOfNode(client client.Reader, node *corev1.Node) (underlayAttached,
+	overlayAttached, bgpAttached bool, err error) {
 	var underlayNetworkName string
-	if underlayNetworkName, err = FindUnderlayNetworkForNode(client, node.GetLabels()); err != nil {
+	var underlayNetworkMode networkingv1.NetworkMode
+	if underlayNetworkName, underlayNetworkMode, err = FindUnderlayNetworkForNode(client, node.GetLabels()); err != nil {
 		return
 	}
 	var overlayNetworkName string
@@ -198,7 +200,7 @@ func DetectNetworkAttachmentOfNode(client client.Reader, node *corev1.Node) (und
 		return
 	}
 
-	return underlayNetworkName != "", overlayNetworkName != "", nil
+	return underlayNetworkName != "", overlayNetworkName != "", underlayNetworkMode == networkingv1.NetworkModeBGP, nil
 }
 
 func ListAllocatedIPInstancesOfPod(c client.Reader, pod *corev1.Pod) (ips []*networkingv1.IPInstance, err error) {

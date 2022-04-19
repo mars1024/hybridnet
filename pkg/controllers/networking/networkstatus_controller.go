@@ -234,7 +234,7 @@ func (r *NetworkStatusReconciler) SetupWithManager(mgr ctrl.Manager) (err error)
 				if !ok {
 					return nil
 				}
-				underlayNetworkName, err := utils.FindUnderlayNetworkForNode(r, node.GetLabels())
+				underlayNetworkName, _, err := utils.FindUnderlayNetworkForNode(r, node.GetLabels())
 				if err != nil {
 					// TODO: handle error
 					return nil
