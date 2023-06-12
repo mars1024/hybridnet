@@ -45,6 +45,8 @@ import (
 	webhookutils "github.com/alibaba/hybridnet/pkg/webhook/utils"
 )
 
+const defaultInterfaceName = "eth0"
+
 type cniDaemonHandler struct {
 	config       *daemonconfig.Configuration
 	mgrClient    client.Client
@@ -120,7 +122,7 @@ func (cdh *cniDaemonHandler) handleAdd(req *restful.Request, resp *restful.Respo
 		time.Sleep(backOffBase)
 		backOffBase = backOffBase * 2
 
-		if ipInstanceList, err = cdh.listAvailableIPInstanceOfPod(string(pod.GetUID()), podRequest.PodNamespace); err != nil {
+		if ipInstanceList, err = cdh.listAvailableIPInstanceOfPodByInterfaceName(string(pod.GetUID()), podRequest.PodNamespace, defaultInterfaceName); err != nil {
 			errMsg := fmt.Errorf("failed to list ip instances for pod %v/%v: %v",
 				podRequest.PodName, podRequest.PodNamespace, err)
 			cdh.errorWrapper(errMsg, http.StatusBadRequest, resp)
@@ -338,6 +340,125 @@ func (cdh *cniDaemonHandler) handleDel(req *restful.Request, resp *restful.Respo
 	resp.WriteHeader(http.StatusNoContent)
 }
 
+func (cdh *cniDaemonHandler) handleIPAMAdd(req *restful.Request, resp *restful.Response) {
+	var ipamRequest = request.PodIPAMRequest{}
+	var err error
+
+	if err = req.ReadEntity(&ipamRequest); err != nil {
+		cdh.errorWrapper(fmt.Errorf("failed to parse add request: %v", err), http.StatusBadRequest, resp)
+		return
+	}
+
+	cdh.logger.V(5).Info("handle ipam add request", "content", ipamRequest)
+
+	// fetch pod from api-server
+	var pod = &corev1.Pod{}
+	if err = cdh.mgrAPIReader.Get(context.TODO(), types.NamespacedName{
+		Name:      ipamRequest.PodName,
+		Namespace: ipamRequest.PodNamespace,
+	}, pod); err != nil {
+		cdh.errorWrapper(fmt.Errorf("failed to get pod %v/%v: %v", ipamRequest.PodName, ipamRequest.PodNamespace, err), http.StatusBadRequest, resp)
+		return
+	}
+
+	// parse ip family from pod
+	ipFamily := ipamtypes.ParseIPFamilyFromString(pod.Annotations[constants.AnnotationIPFamily])
+	handledByWebhook := globalutils.ParseBoolOrDefault(pod.Annotations[constants.AnnotationHandledByWebhook], false)
+
+	if !handledByWebhook {
+		_, _, _, ipFamily, _, _, err = webhookutils.ParseNetworkConfigOfPodByPriority(context.TODO(), cdh.mgrAPIReader, pod)
+		if err != nil {
+			errMsg := fmt.Errorf("failed to parse network config of pod %v: %v", pod.Name, err)
+			cdh.errorWrapper(errMsg, http.StatusBadRequest, resp)
+			return
+		}
+	}
+
+	// judge expected ip count by ip family
+	var expectedIPCount int
+	switch ipFamily {
+	case ipamtypes.IPv4, ipamtypes.IPv6:
+		expectedIPCount = 1
+	case ipamtypes.DualStack:
+		expectedIPCount = 2
+	default:
+		cdh.errorWrapper(fmt.Errorf("invalid ip family %v for pod %v/%v", ipFamily, ipamRequest.PodName, ipamRequest.PodNamespace), http.StatusBadRequest, resp)
+		return
+	}
+
+	// wait for expected ip instances
+	var (
+		affectedIPInstances []*networkingv1.IPInstance
+		returnIPAddress     []request.IPAddress
+		ipInstanceList      []*networkingv1.IPInstance
+		backOffBase         = 5 * time.Microsecond
+		retries             = 11
+	)
+	for i := 0; i < retries; i++ {
+		// backoff each time
+		time.Sleep(backOffBase)
+		backOffBase = backOffBase * 2
+
+		if ipInstanceList, err = cdh.listAvailableIPInstanceOfPodByInterfaceName(string(pod.GetUID()), ipamRequest.PodNamespace, ipamRequest.InterfaceName); err != nil {
+			cdh.errorWrapper(fmt.Errorf("failed to list ip instances for pod %v/%v/%v: %v", ipamRequest.PodName, ipamRequest.PodNamespace, ipamRequest.InterfaceName, err), http.StatusBadRequest, resp)
+			return
+		}
+
+		if len(ipInstanceList) == expectedIPCount {
+			break
+		} else if i == retries-1 {
+			cdh.errorWrapper(fmt.Errorf("failed to wait for pod %v/%v to be coupled with ip, expect %v and get %v",
+				ipamRequest.PodName, ipamRequest.PodNamespace, expectedIPCount, len(ipInstanceList)), http.StatusBadRequest, resp)
+			return
+		}
+	}
+
+	for _, ipInstance := range ipInstanceList {
+		returnIPAddress = append(returnIPAddress, request.IPAddress{
+			IP:       ipInstance.Spec.Address.IP,
+			Mac:      ipInstance.Spec.Address.MAC,
+			Gateway:  ipInstance.Spec.Address.Gateway,
+			Protocol: ipInstance.Spec.Address.Version,
+		})
+
+		affectedIPInstances = append(affectedIPInstances, ipInstance)
+	}
+
+	cdh.logger.Info("Get allocated IP",
+		"podName", ipamRequest.PodName,
+		"podNamespace", ipamRequest.PodNamespace,
+		"interfaceName", ipamRequest.InterfaceName,
+		"ipAddr", returnIPAddress,
+	)
+
+	// update IPInstance crd status
+	for _, ip := range affectedIPInstances {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var updateTimestamp string
+			updateTimestamp, err = metav1.Now().MarshalQueryParameter()
+			if err != nil {
+				return fmt.Errorf("failed to generate update timestamp: %v", err)
+			}
+
+			return cdh.mgrClient.Status().Patch(context.TODO(), ip,
+				client.RawPatch(types.MergePatchType,
+					[]byte(fmt.Sprintf(`{"status":{"sandboxID":%q,"nodeName":%q,"podNamespace":%q,"podName":%q,"phase":null,"updateTimestamp":%q}}`,
+						ipamRequest.ContainerID, cdh.config.NodeName, ipamRequest.PodNamespace, ipamRequest.PodName, updateTimestamp))))
+		}); err != nil {
+			cdh.errorWrapper(fmt.Errorf("failed to update IPInstance crd for %s, %v", ip.Name, err), http.StatusInternalServerError, resp)
+			return
+		}
+	}
+
+	_ = resp.WriteHeaderAndEntity(http.StatusOK, request.PodIPAMResponse{
+		Addresses: returnIPAddress,
+	})
+}
+
+func (cdh *cniDaemonHandler) handleIPAMDel(_ *restful.Request, resp *restful.Response) {
+	resp.WriteHeader(http.StatusNoContent)
+}
+
 func (cdh *cniDaemonHandler) errorWrapper(err error, status int, resp *restful.Response) {
 	cdh.logger.Error(err, "handler error")
 	_ = resp.WriteHeaderAndEntity(status, request.PodResponse{
@@ -345,13 +466,25 @@ func (cdh *cniDaemonHandler) errorWrapper(err error, status int, resp *restful.R
 	})
 }
 
-func (cdh *cniDaemonHandler) listAvailableIPInstanceOfPod(podUID, podNamespace string) ([]*networkingv1.IPInstance, error) {
+func (cdh *cniDaemonHandler) listAvailableIPInstanceOfPodByInterfaceName(podUID, podNamespace, interfaceName string) ([]*networkingv1.IPInstance, error) {
 	ipInstanceList := &networkingv1.IPInstanceList{}
 	if err := cdh.mgrClient.List(context.TODO(), ipInstanceList, client.InNamespace(podNamespace), client.MatchingLabels{
-		constants.LabelNode:   cdh.config.NodeName,
-		constants.LabelPodUID: podUID,
+		constants.LabelNode:          cdh.config.NodeName,
+		constants.LabelPodUID:        podUID,
+		constants.LabelInterfaceName: interfaceName,
 	}); err != nil {
 		return nil, err
+	}
+
+	// for legacy mode
+	if len(ipInstanceList.Items) == 0 && interfaceName == defaultInterfaceName {
+		if err := cdh.mgrClient.List(context.TODO(), ipInstanceList, client.InNamespace(podNamespace), client.MatchingLabels{
+			constants.LabelNode:          cdh.config.NodeName,
+			constants.LabelPodUID:        podUID,
+			constants.LabelInterfaceName: interfaceName,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	var availableIPInstances []*networkingv1.IPInstance

@@ -17,14 +17,15 @@
 package constants
 
 const (
-	LabelCluster = "networking.alibaba.com/cluster"
-	LabelSubnet  = "networking.alibaba.com/subnet"
-	LabelVM      = "networking.alibaba.com/vm"
-	LabelNetwork = "networking.alibaba.com/network"
-	LabelNode    = "networking.alibaba.com/node"
-	LabelPod     = "networking.alibaba.com/pod"
-	LabelPodUID  = "networking.alibaba.com/pod-uid"
-	LabelVersion = "networking.alibaba.com/version"
+	LabelCluster       = "networking.alibaba.com/cluster"
+	LabelSubnet        = "networking.alibaba.com/subnet"
+	LabelVM            = "networking.alibaba.com/vm"
+	LabelNetwork       = "networking.alibaba.com/network"
+	LabelNode          = "networking.alibaba.com/node"
+	LabelPod           = "networking.alibaba.com/pod"
+	LabelPodUID        = "networking.alibaba.com/pod-uid"
+	LabelInterfaceName = "networking.alibaba.com/interface-name"
+	LabelVersion       = "networking.alibaba.com/version"
 
 	LabelSpecifiedNetwork = "networking.alibaba.com/specified-network"
 	LabelSpecifiedSubnet  = "networking.alibaba.com/specified-subnet"

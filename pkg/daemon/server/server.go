@@ -72,5 +72,15 @@ func createHandler(cdh *cniDaemonHandler) http.Handler {
 			To(cdh.handleDel).
 			Reads(request.PodRequest{}))
 
+	ws.Route(
+		ws.POST("/ipam/add").
+			To(cdh.handleIPAMAdd).
+			Reads(request.PodIPAMRequest{}))
+
+	ws.Route(
+		ws.POST("/ipam/del").
+			To(cdh.handleDel).
+			Reads(request.PodIPAMRequest{}))
+
 	return wsContainer
 }
