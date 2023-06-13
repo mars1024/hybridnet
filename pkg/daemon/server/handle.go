@@ -479,9 +479,8 @@ func (cdh *cniDaemonHandler) listAvailableIPInstanceOfPodByInterfaceName(podUID,
 	// for legacy mode
 	if len(ipInstanceList.Items) == 0 && interfaceName == defaultInterfaceName {
 		if err := cdh.mgrClient.List(context.TODO(), ipInstanceList, client.InNamespace(podNamespace), client.MatchingLabels{
-			constants.LabelNode:          cdh.config.NodeName,
-			constants.LabelPodUID:        podUID,
-			constants.LabelInterfaceName: interfaceName,
+			constants.LabelNode:   cdh.config.NodeName,
+			constants.LabelPodUID: podUID,
 		}); err != nil {
 			return nil, err
 		}
