@@ -36,6 +36,8 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 )
 
+const hybridnetType = "hybridnet"
+
 func init() {
 	// this ensures that main runs only on main thread (thread group leader).
 	// since namespace ops (unshare, setns) are done for a single thread, we
@@ -57,6 +59,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 	netConf, cniVersion, err := loadNetConf(args.StdinData)
 	if err != nil {
 		return err
+	}
+
+	// if IPAM type is assigned as hybridnet, only work as an IPAM plugin
+	if netConf.IPAM.Type == hybridnetType {
+		return ipamAdd(args)
 	}
 
 	podName, err := parseValueFromArgs("K8S_POD_NAME", args.Args)
@@ -83,6 +90,65 @@ func cmdAdd(args *skel.CmdArgs) error {
 	result, err := generateCNIResult(cniVersion, response)
 	if err != nil {
 		return fmt.Errorf("generate cni result failed: %v", err)
+	}
+
+	return types.PrintResult(result, cniVersion)
+}
+
+func ipamAdd(args *skel.CmdArgs) error {
+	// parse ipam network config
+	netConf, cniVersion, err := loadIPAMNetConf(args.StdinData)
+	if err != nil {
+		return err
+	}
+
+	// fetch pod info from args
+	podName, err := parseValueFromArgs("K8S_POD_NAME", args.Args)
+	if err != nil {
+		return err
+	}
+
+	podNamespace, err := parseValueFromArgs("K8S_POD_NAMESPACE", args.Args)
+	if err != nil {
+		return err
+	}
+
+	// request daemon for ipam adding
+	client := request.NewCniDaemonClient(netConf.IPAM.ServerSocket)
+
+	response, err := client.IPAMAdd(request.PodIPAMRequest{
+		PodName:       podName,
+		PodNamespace:  podNamespace,
+		InterfaceName: netConf.IPAM.InterfaceName,
+		ContainerID:   args.ContainerID,
+	})
+	if err != nil {
+		return err
+	}
+
+	// construct and print result
+	result := &current.Result{
+		CNIVersion: cniVersion,
+		IPs:        []*current.IPConfig{},
+	}
+
+	for _, address := range response.Addresses {
+		ip, ipNet, _ := net.ParseCIDR(address.IP)
+
+		switch address.Protocol {
+		case networkingv1.IPv4:
+			result.IPs = append(result.IPs, &current.IPConfig{
+				Version: "4",
+				Address: net.IPNet{IP: ip.To4(), Mask: ipNet.Mask},
+				Gateway: net.ParseIP(address.Gateway),
+			})
+		case networkingv1.IPv6:
+			result.IPs = append(result.IPs, &current.IPConfig{
+				Version: "6",
+				Address: net.IPNet{IP: ip.To16(), Mask: ipNet.Mask},
+				Gateway: net.ParseIP(address.Gateway),
+			})
+		}
 	}
 
 	return types.PrintResult(result, cniVersion)
@@ -148,6 +214,11 @@ func cmdDel(args *skel.CmdArgs) error {
 		return err
 	}
 
+	// if IPAM type is assigned as hybridnet, only work as an IPAM plugin
+	if netConf.IPAM.Type == hybridnetType {
+		return ipamDel(args)
+	}
+
 	client := request.NewCniDaemonClient(netConf.ServerSocket)
 	podName, err := parseValueFromArgs("K8S_POD_NAME", args.Args)
 	if err != nil {
@@ -165,9 +236,27 @@ func cmdDel(args *skel.CmdArgs) error {
 		NetNs:        args.Netns})
 }
 
+func ipamDel(args *skel.CmdArgs) error {
+	// do nothing for now
+	return nil
+}
+
 type netConf struct {
 	types.NetConf
 	ServerSocket string `json:"server_socket"`
+}
+
+type ipamNetConf struct {
+	CNIVersion string     `json:"cniVersion,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	Type       string     `json:"type,omitempty"`
+	IPAM       ipamConfig `json:"ipam,omitempty"`
+}
+
+type ipamConfig struct {
+	Type          string `json:"type"`
+	ServerSocket  string `json:"server_socket"`
+	InterfaceName string `json:"interface_name"`
 }
 
 func loadNetConf(bytes []byte) (*netConf, string, error) {
@@ -178,6 +267,22 @@ func loadNetConf(bytes []byte) (*netConf, string, error) {
 	if n.ServerSocket == "" {
 		return nil, "", fmt.Errorf("server_socket is required in cni.conf")
 	}
+	return n, n.CNIVersion, nil
+}
+
+func loadIPAMNetConf(bytes []byte) (*ipamNetConf, string, error) {
+	n := &ipamNetConf{}
+	if err := json.Unmarshal(bytes, n); err != nil {
+		return nil, "", fmt.Errorf("failed to load netconf: %v", err)
+	}
+
+	if n.IPAM.ServerSocket == "" {
+		return nil, "", fmt.Errorf("server_socket is required in cni.conf")
+	}
+	if n.IPAM.InterfaceName == "" {
+		return nil, "", fmt.Errorf("interface_name is required in cni.conf")
+	}
+
 	return n, n.CNIVersion, nil
 }
 
