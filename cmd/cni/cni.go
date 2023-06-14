@@ -66,6 +66,11 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return ipamAdd(args)
 	}
 
+	// validate net conf
+	if err = validateNetConf(netConf); err != nil {
+		return err
+	}
+
 	podName, err := parseValueFromArgs("K8S_POD_NAME", args.Args)
 	if err != nil {
 		return err
@@ -99,6 +104,11 @@ func ipamAdd(args *skel.CmdArgs) error {
 	// parse ipam network config
 	netConf, cniVersion, err := loadIPAMNetConf(args.StdinData)
 	if err != nil {
+		return err
+	}
+
+	// validate net conf
+	if err = validateIPAMNetConf(netConf); err != nil {
 		return err
 	}
 
@@ -219,6 +229,11 @@ func cmdDel(args *skel.CmdArgs) error {
 		return ipamDel(args)
 	}
 
+	// validate net conf
+	if err = validateNetConf(netConf); err != nil {
+		return err
+	}
+
 	client := request.NewCniDaemonClient(netConf.ServerSocket)
 	podName, err := parseValueFromArgs("K8S_POD_NAME", args.Args)
 	if err != nil {
@@ -264,10 +279,21 @@ func loadNetConf(bytes []byte) (*netConf, string, error) {
 	if err := json.Unmarshal(bytes, n); err != nil {
 		return nil, "", fmt.Errorf("failed to load netconf: %v", err)
 	}
-	if n.ServerSocket == "" {
-		return nil, "", fmt.Errorf("server_socket is required in cni.conf")
-	}
+
 	return n, n.CNIVersion, nil
+}
+
+func validateNetConf(conf *netConf) error {
+	if conf == nil {
+		return fmt.Errorf("config should not be null")
+	}
+	if conf.Type != hybridnetType {
+		return fmt.Errorf("type must be \"hybridnet\"")
+	}
+	if conf.ServerSocket == "" {
+		return fmt.Errorf("server_socket is required")
+	}
+	return nil
 }
 
 func loadIPAMNetConf(bytes []byte) (*ipamNetConf, string, error) {
@@ -276,14 +302,20 @@ func loadIPAMNetConf(bytes []byte) (*ipamNetConf, string, error) {
 		return nil, "", fmt.Errorf("failed to load netconf: %v", err)
 	}
 
-	if n.IPAM.ServerSocket == "" {
-		return nil, "", fmt.Errorf("server_socket is required in cni.conf")
-	}
-	if n.IPAM.InterfaceName == "" {
-		return nil, "", fmt.Errorf("interface_name is required in cni.conf")
-	}
-
 	return n, n.CNIVersion, nil
+}
+
+func validateIPAMNetConf(conf *ipamNetConf) error {
+	if conf == nil {
+		return fmt.Errorf("config should not be null")
+	}
+	if conf.IPAM.ServerSocket == "" {
+		return fmt.Errorf("ipam.server_socket is required")
+	}
+	if conf.IPAM.InterfaceName == "" {
+		return fmt.Errorf("ipam.interface_name is required")
+	}
+	return nil
 }
 
 func parseValueFromArgs(key, argString string) (string, error) {
